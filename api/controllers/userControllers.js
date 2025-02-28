@@ -2,9 +2,12 @@ const Joi = require("joi");
 const User = require("../models/User");
 const httpStatus = require("http-status");
 const jwt = require("jsonwebtoken");
+const nodemailer = require("nodemailer");
 const bcrypt = require('bcryptjs');
 const upload = require("../middlewares/uploads");
 const Cart = require("../models/Carts");
+require("dotenv").config();
+const WelcomeEmail = require("../templates/welcomeemail");  
 
 const userValidationSchema = Joi.object({
   name: Joi.string().required(),
@@ -100,9 +103,7 @@ const register = async (req, res, next) => {
       });
     }
 
-    const checkUserExist = await User.findOne({
-      email: req.body.email
-    });
+    const checkUserExist = await User.findOne({ email: req.body.email });
     if (checkUserExist) {
       return res.status(httpStatus.CONFLICT).json({
         success: false,
@@ -110,31 +111,55 @@ const register = async (req, res, next) => {
       });
     }
 
-    bcrypt.genSalt(10, async (error, salt) => {
-      bcrypt.hash(req.body.password, salt, async (error, hash) => {
-        const user = await User.create({ ...req.body, password: hash });
-        if (user) {
-          await createCart(user)
-          return res.status(httpStatus.OK).json({
-            success: true,
-            msg: 'Registration Completed'
-          });
-        } else {
-          return res.status(httpStatus.INTERNAL_SERVER_ERROR).json({
-            success: false,
-            msg: "Failed to Register!!"
-          });
-        }
+    // Hash password using bcrypt
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(req.body.password, salt);
+
+    // Create new user
+    const user = await User.create({ ...req.body, password: hashedPassword });
+
+    if (!user) {
+      return res.status(httpStatus.INTERNAL_SERVER_ERROR).json({
+        success: false,
+        msg: "Failed to Register!!"
       });
+    }
+
+    // Create user's cart
+    await createCart(user);
+
+    // Set up nodemailer transporter
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: process.env.EMAIL_USER, 
+        pass: process.env.EMAIL_PASS, 
+      }
     });
+
+    // Send Welcome Email
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: user.email,
+      subject: "Registration Successful. Welcome!",
+      html: WelcomeEmail({ name: user.name }),
+    };
+
+    await transporter.sendMail(mailOptions);
+
+    return res.status(httpStatus.OK).json({
+      success: true,
+      msg: "Registration Completed"
+    });
+
   } catch (error) {
+    console.error("Error in registration:", error);
     return res.status(httpStatus.INTERNAL_SERVER_ERROR).json({
       success: false,
       msg: error.message
     });
   }
 };
-
 const allUser = async (req, res, next) => {
   try {
     const { page = 1, size = 10, sort =
@@ -243,6 +268,103 @@ const uploadPP = async (req, res) => {
     }
   });
 };
+const resetPasswordRequest = async (req, res) => {
+  try {
+      const { email } = req.body;
+      if (!email) {
+          return res.status(400).send({ message: "Email is required" });
+      }
+
+      const user = await User.findOne({ email });
+      if (!user) {
+          return res.status(404).send({ message: "User not found" });
+      }
+
+      // Create a reset token (expires in 1 hour)
+      const resetToken = jwt.sign(
+          { user_id: user._id },
+          process.env.JWT_SECRET, // ✅ Using existing JWT_SECRET
+          { expiresIn: '1h' } // Set token expiry time
+      );
+
+      // Construct reset link
+      const resetLink = `${process.env.CLIENT_URL}/reset-password?token=${resetToken}`;
+
+      // Send Reset Email
+      const transporter = nodemailer.createTransport({
+          service: "gmail",
+          auth: {
+              user: process.env.EMAIL_USER,
+              pass: process.env.EMAIL_PASS,
+          }
+      });
+
+      const mailOptions = {
+          from: process.env.EMAIL_USER,
+          to: user.email,
+          subject: "Password Reset Request",
+          html: `<p>Hello ${user.name},</p>
+                 <p>You requested a password reset. Click the link below to reset your password:</p>
+                 <a href="${resetLink}">${resetLink}</a>
+                 <p>This link will expire in 1 hour.</p>`,
+      };
+
+      await transporter.sendMail(mailOptions);
+
+      res.status(200).send({ message: "Password reset email sent successfully" });
+  } catch (error) {
+      console.error("❌ Error sending reset email:", error);
+      res.status(500).send({ message: "Error in sending reset email", error: error.message });
+  }
+};
+
+const resetPassword = async (req, res) => {
+  try {
+      const { token, newPassword } = req.body;
+
+      console.log("🔹 Received Token for Reset:", token);  // Debugging Step
+
+      // ✅ Verify the reset token
+      let decoded;
+      try {
+          decoded = jwt.verify(token, process.env.JWT_SECRET);
+      } catch (error) {
+          console.error("❌ Token Verification Error:", error.message);
+          return res.status(400).json({ message: "Invalid or expired reset token" });
+      }
+
+      console.log("🔹 Decoded Token:", decoded);
+
+      // ✅ Find the user associated with the token
+      const user = await User.findById(decoded.user_id);
+      if (!user) {
+          console.error("❌ User Not Found");
+          return res.status(404).json({ message: "User not found" });
+      }
+
+      console.log("🔹 User Found:", user.email);
+
+      // ✅ Ensure new password is provided
+      if (!newPassword || newPassword.length < 6) {
+          return res.status(400).json({ message: "Password must be at least 6 characters long" });
+      }
+
+      // ✅ Hash the new password before saving (Same as in Registration)
+      const salt = await bcrypt.genSalt(10);
+      const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+      // ✅ Set new password
+      user.password = hashedPassword;
+      await user.save();
+
+      console.log("✅ Password Updated Successfully in Database!");
+
+      return res.status(200).json({ message: "Password reset successfully. You can now log in with your new password." });
+  } catch (error) {
+      console.error("❌ Error resetting password:", error);
+      return res.status(500).json({ message: "Server error", error });
+  }
+};
 
 const changePassword = async (req, res) => {
   try {
@@ -302,5 +424,7 @@ module.exports = {
   uploadPP,
   changePassword,
   deleteUser,
-  createCart
+  createCart,
+  resetPasswordRequest,
+  resetPassword
 };
