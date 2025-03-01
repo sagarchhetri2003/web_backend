@@ -8,6 +8,7 @@ const upload = require("../middlewares/uploads");
 const Cart = require("../models/Carts");
 require("dotenv").config();
 const WelcomeEmail = require("../templates/welcomeemail");  
+const ResetPasswordEmail = require("../templates/resetpasswordemail");
 
 const userValidationSchema = Joi.object({
   name: Joi.string().required(),
@@ -268,61 +269,62 @@ const uploadPP = async (req, res) => {
     }
   });
 };
+ // Import the email template
+
 const resetPasswordRequest = async (req, res) => {
-  try {
-      const { email } = req.body;
-      if (!email) {
-          return res.status(400).send({ message: "Email is required" });
-      }
+    try {
+        const { email } = req.body;
+        if (!email) {
+            return res.status(400).send({ message: "Email is required" });
+        }
 
-      const user = await User.findOne({ email });
-      if (!user) {
-          return res.status(404).send({ message: "User not found" });
-      }
+        const user = await User.findOne({ email });
+        if (!user) {
+            return res.status(404).send({ message: "User not found" });
+        }
 
-      // Create a reset token (expires in 1 hour)
-      const resetToken = jwt.sign(
-          { user_id: user._id },
-          process.env.JWT_SECRET, // ✅ Using existing JWT_SECRET
-          { expiresIn: '1h' } // Set token expiry time
-      );
+        // Generate a reset token (expires in 1 hour)
+        const resetToken = jwt.sign(
+            { user_id: user._id },
+            process.env.JWT_SECRET,
+            { expiresIn: '1h' }
+        );
 
-      // Construct reset link
-      const resetLink = `${process.env.CLIENT_URL}/reset-password?token=${resetToken}`;
+        // Construct reset link
+        const clientUrl = process.env.CLIENT_URL || "http://localhost:3001";
+        const resetLink = `${clientUrl}/reset-password?token=${resetToken}`;
 
-      // Send Reset Email
-      const transporter = nodemailer.createTransport({
-          service: "gmail",
-          auth: {
-              user: process.env.EMAIL_USER,
-              pass: process.env.EMAIL_PASS,
-          }
-      });
+        // Set up nodemailer transporter
+        const transporter = nodemailer.createTransport({
+            service: "gmail",
+            auth: {
+                user: process.env.EMAIL_USER,
+                pass: process.env.EMAIL_PASS,
+            }
+        });
 
-      const mailOptions = {
-          from: process.env.EMAIL_USER,
-          to: user.email,
-          subject: "Password Reset Request",
-          html: `<p>Hello ${user.name},</p>
-                 <p>You requested a password reset. Click the link below to reset your password:</p>
-                 <a href="${resetLink}">${resetLink}</a>
-                 <p>This link will expire in 1 hour.</p>`,
-      };
+        // Send Reset Email using the template
+        const mailOptions = {
+            from: process.env.EMAIL_USER,
+            to: user.email,
+            subject: "Password Reset Request",
+            html: ResetPasswordEmail({ name: user.name, resetLink }), // Using the template
+        };
 
-      await transporter.sendMail(mailOptions);
+        await transporter.sendMail(mailOptions);
 
-      res.status(200).send({ message: "Password reset email sent successfully" });
-  } catch (error) {
-      console.error("❌ Error sending reset email:", error);
-      res.status(500).send({ message: "Error in sending reset email", error: error.message });
-  }
+        res.status(200).send({ message: "Password reset email sent successfully" });
+    } catch (error) {
+        console.error("❌ Error sending reset email:", error);
+        res.status(500).send({ message: "Error in sending reset email", error: error.message });
+    }
 };
 
 const resetPassword = async (req, res) => {
   try {
       const { token, newPassword } = req.body;
 
-      console.log("🔹 Received Token for Reset:", token);  // Debugging Step
+      console.log("🔹 Received Token for Reset:", token);  // Debuggcling Step
 
       // ✅ Verify the reset token
       let decoded;
@@ -427,4 +429,5 @@ module.exports = {
   createCart,
   resetPasswordRequest,
   resetPassword
+  
 };
